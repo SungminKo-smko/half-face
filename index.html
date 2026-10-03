@@ -119,7 +119,7 @@ const $ = id => document.getElementById(id);
 const video = $('video'), cam = $('cam'), result = $('result'), toastEl = $('toast');
 let stream = null, facing = 'user';
 let src = null;                       // 촬영 원본 캔버스
-let base = null;                      // {cx, cy, theta, H}
+let base = null;                      // {cx, cy, theta, H, oval}
 const adj = {dx:0, da:0};
 const aligned = document.createElement('canvas');
 
@@ -189,10 +189,13 @@ $('file').onchange = e=>{
   e.target.value = '';
 };
 
-/* ── 코 선(얼굴 중심선) 찾기 ── */
+/* ── 코 선(얼굴 중심선)과 얼굴 윤곽 찾기 ── */
 const MIDLINE = [10,151,9,8,168,6,197,195,5,4,1,2,164,0,17,18,200,199,175,152];
+const OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,
+              148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
 function findMidline(lm, w, h){
-  const pts = MIDLINE.map(i=>({x:lm[i].x*w, y:lm[i].y*h}));
+  const px = i=>({x:lm[i].x*w, y:lm[i].y*h});
+  const pts = MIDLINE.map(px);
   const n = pts.length, my = pts.reduce((s,p)=>s+p.y,0)/n, mx = pts.reduce((s,p)=>s+p.x,0)/n;
   let sxy=0, syy=0;
   for(const p of pts){ sxy += (p.x-mx)*(p.y-my); syy += (p.y-my)**2; }
@@ -202,7 +205,7 @@ function findMidline(lm, w, h){
   const H = Math.hypot(top.x-chin.x, top.y-chin.y);
   let cy = (top.y+chin.y)/2, cx = mx + a*(cy-my);
   cx -= 0.1*H*Math.sin(theta); cy -= 0.1*H*Math.cos(theta);   // 머리카락이 들어가게 조금 위로
-  return {cx, cy, theta, H};
+  return {cx, cy, theta, H, oval:OVAL.map(px)};
 }
 
 async function process(canvas){
@@ -214,21 +217,31 @@ async function process(canvas){
     const res = lmk?.detect(canvas);
     if(res?.faceLandmarks?.length) found = findMidline(res.faceLandmarks[0], canvas.width, canvas.height);
   }catch(e){ console.warn(e); }
-  base = found ?? {cx:canvas.width/2, cy:canvas.height/2, theta:0, H:Math.min(canvas.width, canvas.height)*0.55};
+  base = found ?? {cx:canvas.width/2, cy:canvas.height/2, theta:0, H:Math.min(canvas.width, canvas.height)*0.55, oval:null};
   adj.dx = adj.da = 0; $('dx').value = 0; $('da').value = 0;
   stopCamera();
   cam.hidden = true; result.hidden = false;
   render();
   if(found) toastEl.hidden = true;
-  else { toast('얼굴을 자동으로 찾지 못했습니다. 중심선을 직접 맞춰 주세요.'); showAdjust(true); }
+  else { toast('얼굴을 자동으로 찾지 못해 머리까지 통째로 반전했습니다. 중심선을 직접 맞춰 주세요.', 4000); showAdjust(true); }
 }
 
 /* ── 합성 ── */
+// 캔버스의 한쪽 반(sx부터 half 폭)만으로 좌우 대칭 이미지를 만든다
+function mirrorHalf(from, sx, half){
+  const cv = document.createElement('canvas'); cv.width = from.width; cv.height = from.height;
+  const c = cv.getContext('2d');
+  c.drawImage(from, sx,0,half,cv.height, sx,0,half,cv.height);
+  c.translate(cv.width,0); c.scale(-1,1);
+  c.drawImage(from, sx,0,half,cv.height, sx,0,half,cv.height);
+  return cv;
+}
+
 function render(){
-  const th = base.theta + adj.da*Math.PI/180;
+  const th = base.theta + adj.da*Math.PI/180, cos = Math.cos(th), sin = Math.sin(th);
   const half = Math.round(base.H*0.6), W = half*2, Hc = Math.round(base.H*1.55);
-  const cx = base.cx + adj.dx*base.H*Math.cos(th);
-  const cy = base.cy - adj.dx*base.H*Math.sin(th);
+  const cx = base.cx + adj.dx*base.H*cos;
+  const cy = base.cy - adj.dx*base.H*sin;
 
   // 중심선이 정확히 세로 가운데에 오도록 바로 세운 얼굴
   aligned.width = W; aligned.height = Hc;
@@ -237,12 +250,36 @@ function render(){
   a.translate(W/2, Hc/2); a.rotate(th); a.translate(-cx, -cy);
   a.drawImage(src,0,0);
 
+  // 얼굴 윤곽 마스크 (가장자리를 부드럽게): 작게 그린 뒤 확대해서 번지게 한다
+  let mask = null;
+  if(base.oval){
+    const pts = base.oval.map(p=>{ const x = p.x-cx, y = p.y-cy;
+      return {x:W/2 + x*cos - y*sin, y:Hc/2 + x*sin + y*cos}; });
+    const mx = pts.reduce((s,p)=>s+p.x,0)/pts.length, my = pts.reduce((s,p)=>s+p.y,0)/pts.length;
+    const s = Math.max(4, Math.round(base.H*0.04)), k = 0.95;     // k: 머리카락을 덜 건드리게 살짝 안쪽으로
+    const small = document.createElement('canvas');
+    small.width = Math.ceil(W/s); small.height = Math.ceil(Hc/s);
+    const sc = small.getContext('2d');
+    sc.beginPath();
+    pts.forEach((p,i)=>{ const x = (mx+(p.x-mx)*k)/s, y = (my+(p.y-my)*k)/s; i ? sc.lineTo(x,y) : sc.moveTo(x,y); });
+    sc.closePath(); sc.fill();
+    mask = document.createElement('canvas'); mask.width = W; mask.height = Hc;
+    const mc = mask.getContext('2d'); mc.imageSmoothingEnabled = true; mc.imageSmoothingQuality = 'high';
+    mc.drawImage(small, 0,0, small.width*s, small.height*s);
+  }
+
   const draw = (cv, sx)=>{                 // sx: 쓸 반쪽의 시작 x (0 = 왼쪽, half = 오른쪽)
     cv.width = W; cv.height = Hc;
     const c = cv.getContext('2d');
-    c.drawImage(aligned, sx,0,half,Hc, sx,0,half,Hc);
-    c.translate(W,0); c.scale(-1,1);
-    c.drawImage(aligned, sx,0,half,Hc, sx,0,half,Hc);
+    const sym = mirrorHalf(aligned, sx, half);
+    if(!mask){ c.drawImage(sym,0,0); return; }
+    // 대칭 얼굴에서 얼굴 부분만 오려내어, 원래 사진(머리 모양·배경) 위에 얹는다
+    const sctx = sym.getContext('2d');
+    sctx.setTransform(1,0,0,1,0,0);
+    sctx.globalCompositeOperation = 'destination-in';
+    sctx.drawImage(mirrorHalf(mask, sx, half),0,0);
+    c.drawImage(aligned,0,0);
+    c.drawImage(sym,0,0);
   };
   draw($('cL'), 0);
   draw($('cR'), half);
