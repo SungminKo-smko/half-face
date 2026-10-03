@@ -50,9 +50,10 @@
 
   /* ── 결과 화면 ── */
   #result{background:var(--ink)}
-  .panel{flex:1 1 0;min-height:0;position:relative;display:grid;place-items:center;overflow:hidden}
+  .panel{flex:1 1 0;min-height:0;position:relative;overflow:hidden}
   .panel + .panel{border-top:1px solid rgba(217,219,227,.18)}
-  .panel canvas{max-width:100%;max-height:100%;height:100%;width:auto;display:block}
+  /* 칸 크기에 맞춰 얼굴 전체가 잘리지 않고 들어가도록 */
+  .panel canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block}
   .panel.l{background:linear-gradient(90deg,#20303a,var(--plum) 60%)}
   .panel.o{background:var(--plum)}
   .panel.r{background:linear-gradient(270deg,#3a2a27,var(--plum) 60%)}
@@ -225,7 +226,7 @@ async function process(canvas){
 /* ── 합성 ── */
 function render(){
   const th = base.theta + adj.da*Math.PI/180;
-  const half = Math.round(base.H*0.62), W = half*2, Hc = Math.round(base.H*1.7);
+  const half = Math.round(base.H*0.6), W = half*2, Hc = Math.round(base.H*1.55);
   const cx = base.cx + adj.dx*base.H*Math.cos(th);
   const cy = base.cy - adj.dx*base.H*Math.sin(th);
 
